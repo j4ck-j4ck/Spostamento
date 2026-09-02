@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Diario di rotta</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css" />
+<style>
+  :root{
+    --ink:#1c1f26;
+    --walk:#c97d2f;
+    --bike:#2a7f6f;
+    --car:#4a4e8f;
+    --danger:#a83e3e;
+    --muted:#6f6b60;
+    --glass-bg: rgba(255, 255, 255, .25);
+    --glass-bg-strong: rgba(255, 255, 255, .30);
+    --glass-border: rgba(255, 255, 255, .75);
+    --hairline: rgba(28,31,38,.12);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:var(--ink);
+    color:var(--ink);
+  }
+  #map{
+    position:fixed;
+    inset:0;
+    z-index:0;
+  }
+
+  #toast{
+    position:fixed;
+    bottom:110px;
+    left:50%;
+    transform:translateX(-50%);
+    background:var(--ink);
+    color:#f4f2ec;
+    padding:10px 18px;
+    border-radius:20px;
+    font-size:13px;
+    z-index:900;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+    box-shadow:0 4px 14px rgba(0,0,0,.3);
+    max-width:80vw;
+    text-align:center;
+  }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(-6px); }
+
+  /* ---------- Bottom drawer ---------- */
+  #drawer{
+    position:fixed;
+    left:0; right:0; bottom:0;
+    z-index:600;
+    background: var(--glass-bg);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    border-top:1px solid var(--glass-border);
+    border-radius:20px 20px 0 0;
+    box-shadow:0 -6px 30px rgba(0,0,0,.28);
+    padding:0 16px calc(16px + env(safe-area-inset-bottom));
+    display:flex;
+    flex-direction:column;
+    max-height:82vh;
+  }
+  #drawerHandle{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    padding:10px 0 6px;
+    cursor:grab;
+    touch-action:none;
+    user-select:none;
+  }
+  .handle-bar{
+    width:38px; height:5px; border-radius:3px;
+    background:rgba(28,31,38,.32);
+  }
+  .handle-chevron{
+    font-size:10px;
+    color:var(--muted);
+    transition:transform .3s ease;
+  }
+  #drawer.expanded .handle-chevron{ transform:rotate(180deg); }
+
+  #trackBtn{
+    width:100%;
+    padding:16px;
+    border:none;
+    border-radius:16px;
+    background:var(--ink);
+    color:#f4f2ec;
+    font-size:16px;
+    font-weight:600;
+    cursor:pointer;
+    letter-spacing:.01em;
+    flex-shrink:0;
+  }
+  #trackBtn.recording{background:var(--danger);}
+  #trackBtn:active{transform:translateY(1px);}
+
+  #drawerContent{
+    overflow:hidden;
+    max-height:0;
+    opacity:0;
+    margin-top:0;
+    transition:max-height .35s ease, opacity .25s ease, margin-top .35s ease;
+  }
+  #drawer.expanded #drawerContent{
+    max-height:58vh;
+    opacity:1;
+    margin-top:14px;
+    overflow-y:auto;
+  }
+
+  .section{ margin-bottom:18px; }
+  .section:last-child{ margin-bottom:6px; }
+  .section-label{
+    font-size:12px;
+    color:var(--muted);
+    margin-bottom:8px;
+  }
+  .section-label-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:8px;
+  }
+  .section-label-row .section-label{ margin-bottom:0; }
+  .link-btn{
+    background:none;
+    border:none;
+    color:var(--ink);
+    font-size:12px;
+    text-decoration:underline;
+    cursor:pointer;
+    padding:0;
+  }
+
+  .modes{ display:flex; gap:8px; }
+  .mode-btn{
+    flex:1;
+    padding:10px 4px;
+    border:1px solid var(--hairline);
+    background:var(--glass-bg-strong);
+    border-radius:10px;
+    cursor:pointer;
+    font-size:12.5px;
+    color:var(--ink);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:3px;
+    transition:background .15s, border-color .15s, color .15s;
+  }
+  .mode-btn span{ font-size:18px; }
+  .mode-btn.active[data-mode="a_piedi"]{background:var(--walk); border-color:var(--walk); color:#fff;}
+  .mode-btn.active[data-mode="bici"]{background:var(--bike); border-color:var(--bike); color:#fff;}
+  .mode-btn.active[data-mode="auto"]{background:var(--car); border-color:var(--car); color:#fff;}
+  .mode-btn:disabled{ opacity:.5; cursor:default; }
+
+  #liveStats{
+    display:none;
+    justify-content:space-between;
+    background:var(--glass-bg-strong);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:10px 14px;
+    font-size:12px;
+    color:var(--muted);
+  }
+  #liveStats.show{ display:flex; }
+  #liveStats b{ color:var(--ink); font-size:16px; display:block; }
+
+  #basemapSwitcher{
+    display:flex;
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  #basemapSwitcher button{
+    flex:1;
+    border:none;
+    background:var(--glass-bg-strong);
+    color:var(--ink);
+    font-size:12px;
+    padding:10px 4px;
+    cursor:pointer;
+    border-left:1px solid var(--hairline);
+  }
+  #basemapSwitcher button:first-child{ border-left:none; }
+  #basemapSwitcher button.active{ background:var(--ink); color:#f4f2ec; }
+
+  #trackCarousel{
+    display:flex;
+    gap:10px;
+    overflow-x:auto;
+    padding-bottom:4px;
+    scroll-snap-type:x proximity;
+  }
+  .track-card{
+    flex:0 0 152px;
+    scroll-snap-align:start;
+    background:var(--glass-bg-strong);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:11px;
+    font-size:12px;
+    cursor:pointer;
+  }
+  .track-card.selected{ border-color:var(--ink); background:#fff; }
+  .track-card .dot{ width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:5px; }
+  .dot.a_piedi{background:var(--walk);}
+  .dot.bici{background:var(--bike);}
+  .dot.auto{background:var(--car);}
+  .track-card .dist{ font-weight:600; }
+  .track-card .meta{ color:var(--muted); font-size:10.5px; margin-top:5px; }
+  .track-card .actions{ display:flex; gap:10px; margin-top:9px; font-size:11px; }
+  .track-card .actions span{ cursor:pointer; color:var(--muted); }
+  .track-card .actions span:hover{ color:var(--ink); text-decoration:underline; }
+  .carousel-empty{ color:var(--muted); font-size:12.5px; line-height:1.5; padding:4px 2px; }
+
+  .maplibregl-popup-content{
+    font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:12px;
+    padding:6px 10px;
+  }
+  .maplibregl-ctrl-attrib{ font-size:10px; }
+  .maplibregl-ctrl-bottom-right{ bottom:calc(96px + env(safe-area-inset-bottom)); }
+
+  @media (max-width:520px){
+    #drawer{ padding-left:14px; padding-right:14px; }
+    .mode-btn span{ font-size:16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="toast"></div>
+
+<div id="drawer">
+  <div id="drawerHandle">
+    <div class="handle-bar"></div>
+    <div class="handle-chevron">▲</div>
+  </div>
+
+  <button id="trackBtn">Inizia a tracciare</button>
+
+  <div id="drawerContent">
+    <div class="section">
+      <div class="modes">
+        <button class="mode-btn active" data-mode="a_piedi"><span>🚶</span>A piedi</button>
+        <button class="mode-btn" data-mode="bici"><span>🚲</span>Bici</button>
+        <button class="mode-btn" data-mode="auto"><span>🚗</span>Auto</button>
+      </div>
+    </div>
+
+    <div id="liveStats" class="section">
+      <div><b id="statDist">0,0 km</b>distanza</div>
+      <div><b id="statTime">00:00</b>durata</div>
+      <div><b id="statPoints">0</b>punti</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Mappa</div>
+      <div id="basemapSwitcher">
+        <button data-style="liberty" class="active">Strade</button>
+        <button data-style="satellite">Satellite</button>
+        <button data-style="topo">Topografica</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label-row">
+        <div class="section-label">Percorsi salvati</div>
+        <button class="link-btn" id="showAllTracks">Vedi tutti sulla mappa</button>
+      </div>
+      <div id="trackCarousel"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Storage ----------
+  const STORE_KEY = "diario-di-rotta-tracks-v1";
+
+  function loadTracks(){
+    try{
+      const raw = localStorage.getItem(STORE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    }catch(e){
+      console.error("Errore lettura storage", e);
+      return [];
+    }
+  }
+  function saveTracks(list){
+    try{
+      localStorage.setItem(STORE_KEY, JSON.stringify(list));
+      return true;
+    }catch(e){
+      console.error("Errore scrittura storage", e);
+      showToast("Impossibile salvare: memoria del browser piena");
+      return false;
+    }
+  }
+
+  let tracks = loadTracks();
+
+  const MODE_COLOR = { a_piedi:'#c97d2f', bici:'#2a7f6f', auto:'#4a4e8f' };
+  const MODE_LABEL = { a_piedi:'A piedi', bici:'Bici', auto:'Auto' };
+  const LIVE_DOT_COLOR = '#000000';
+
+  // ---------- Basemap styles (all free, no API key) ----------
+  const STYLES = {
+    liberty: 'https://tiles.openfreemap.org/styles/liberty',
+    satellite: {
+      version: 8,
+      sources: {
+        esri: {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          maxzoom: 17,
+          attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
+        }
+      },
+      layers: [{ id:'esri-layer', type:'raster', source:'esri' }]
+    },
+    topo: {
+      version: 8,
+      sources: {
+        otm: {
+          type: 'raster',
+          tiles: [
+            'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
+            'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
+            'https://c.tile.opentopomap.org/{z}/{x}/{y}.png'
+          ],
+          tileSize: 256,
+          maxzoom: 17,
+          attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM &mdash; style: &copy; OpenTopoMap (CC-BY-SA)'
+        }
+      },
+      layers: [{ id:'otm-layer', type:'raster', source:'otm' }]
+    }
+  };
+  let currentStyleKey = 'liberty';
+
+  // ---------- Map ----------
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: STYLES.liberty,
+    center: [9.1900, 45.4642],
+    zoom: 12,
+    maxZoom: 19,
+    attributionControl: true
+  });
+
+  const liveLineData = { type:'Feature', properties:{ color:'#000' }, geometry:{ type:'LineString', coordinates:[] } };
+  const liveMarkerData = { type:'FeatureCollection', features:[] };
+  let savedTracksData = { type:'FeatureCollection', features:[] };
+  let savedEndpointsData = { type:'FeatureCollection', features:[] };
+
+  function addLayers(){
+    if (!map.getSource('saved-tracks')){
+      map.addSource('saved-tracks', { type:'geojson', data: savedTracksData });
+      map.addLayer({ id:'saved-tracks-layer', type:'line', source:'saved-tracks',
+        layout:{ 'line-cap':'round', 'line-join':'round' },
+        paint:{ 'line-color':['get','color'], 'line-width':4, 'line-opacity':.8 } });
+    }
+    if (!map.getSource('saved-endpoints')){
+      map.addSource('saved-endpoints', { type:'geojson', data: savedEndpointsData });
+      map.addLayer({ id:'saved-endpoints-layer', type:'circle', source:'saved-endpoints',
+        paint:{ 'circle-radius':6, 'circle-color':['get','color'], 'circle-stroke-color':'#fff', 'circle-stroke-width':2 } });
+    }
+    if (!map.getSource('live-line')){
+      map.addSource('live-line', { type:'geojson', data: liveLineData });
+      map.addLayer({ id:'live-line-layer', type:'line', source:'live-line',
+        layout:{ 'line-cap':'round', 'line-join':'round' },
+        paint:{ 'line-color':['get','color'], 'line-width':5, 'line-opacity':.9 } });
+    }
+    // live marker always added last so it renders on top of every track
+    if (!map.getSource('live-marker')){
+      map.addSource('live-marker', { type:'geojson', data: liveMarkerData });
+      map.addLayer({ id:'live-marker-halo', type:'circle', source:'live-marker',
+        paint:{ 'circle-radius':11, 'circle-color':'#ffffff', 'circle-opacity':.55 } });
+      map.addLayer({ id:'live-marker-layer', type:'circle', source:'live-marker',
+        paint:{ 'circle-radius':7, 'circle-color':['get','color'], 'circle-stroke-color':'#fff', 'circle-stroke-width':2 } });
+    }
+    wireTrackInteractions();
+  }
+
+  let interactionsWired = false;
+  function wireTrackInteractions(){
+    if (interactionsWired) return;
+    interactionsWired = true;
+    const popup = new maplibregl.Popup({ closeButton:false, closeOnClick:false });
+    map.on('mousemove', 'saved-tracks-layer', (e)=>{
+      map.getCanvas().style.cursor = 'pointer';
+      const f = e.features[0];
+      popup.setLngLat(e.lngLat).setHTML(f.properties.label).addTo(map);
+    });
+    map.on('mouseleave', 'saved-tracks-layer', ()=>{
+      map.getCanvas().style.cursor = '';
+      popup.remove();
+    });
+    map.on('click', 'saved-tracks-layer', (e)=>{
+      const id = e.features[0].properties.trackId;
+      const tr = tracks.find(t=> t.id === id);
+      if (tr){ selectedTrackId = tr.id; renderTrackList(); drawSavedTrack(tr, true); }
+    });
+  }
+
+  map.on('load', ()=>{
+    addLayers();
+    if (tracks.length > 0){
+      selectedTrackId = 'all';
+      drawAllTracks();
+      renderTrackList();
+    }
+  });
+
+  function switchBasemap(key){
+    if (key === currentStyleKey) return;
+    currentStyleKey = key;
+    interactionsWired = false;
+    map.setStyle(STYLES[key]);
+    map.once('style.load', addLayers);
+    document.querySelectorAll('#basemapSwitcher button').forEach(b=>{
+      b.classList.toggle('active', b.dataset.style === key);
+    });
+  }
+  document.querySelectorAll('#basemapSwitcher button').forEach(b=>{
+    b.addEventListener('click', ()=> switchBasemap(b.dataset.style));
+  });
+
+  // ---------- Continuous "you are here" marker (independent of recording) ----------
+  let hasCenteredOnce = false;
+  function setLiveMarkerSource(){ const s = map.getSource('live-marker'); if (s) s.setData(liveMarkerData); }
+  function setLiveLineSource(){ const s = map.getSource('live-line'); if (s) s.setData(liveLineData); }
+
+  function startLiveMarkerWatch(){
+    if (!navigator.geolocation){
+      showToast("Il browser non supporta la geolocalizzazione");
+      return;
+    }
+    navigator.geolocation.watchPosition(pos=>{
+      const lat = pos.coords.latitude, lng = pos.coords.longitude;
+
+      liveMarkerData.features = [{
+        type:'Feature',
+        properties:{ color: LIVE_DOT_COLOR },
+        geometry:{ type:'Point', coordinates:[lng, lat] }
+      }];
+      setLiveMarkerSource();
+
+      if (!hasCenteredOnce){
+        hasCenteredOnce = true;
+        map.jumpTo({ center:[lng, lat], zoom:15 });
+      }
+
+      if (recording){
+        const p = { lat, lng, t: Date.now(), acc: pos.coords.accuracy };
+        if (!(p.acc && p.acc > 75 && activePoints.length > 0)){
+          activePoints.push(p);
+          liveLineData.geometry.coordinates.push([lng, lat]);
+          setLiveLineSource();
+          updateLiveStats();
+        }
+      }
+    }, err=>{
+      showToast("Segnale GPS non disponibile (" + err.message + ")");
+    }, {
+      enableHighAccuracy:true,
+      maximumAge:2000,
+      timeout:15000
+    });
+  }
+  startLiveMarkerWatch();
+
+  // ---------- Toast ----------
+  let toastTimer = null;
+  function showToast(msg){
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=> t.classList.remove('show'), 3200);
+  }
+
+  // ---------- Distance (Haversine) ----------
+  function haversine(a, b){
+    const R = 6371000;
+    const toRad = d => d * Math.PI/180;
+    const dLat = toRad(b.lat-a.lat);
+    const dLng = toRad(b.lng-a.lng);
+    const la1 = toRad(a.lat), la2 = toRad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
+    return 2*R*Math.asin(Math.sqrt(h));
+  }
+  function trackDistance(points){
+    let d = 0;
+    for (let i=1; i<points.length; i++) d += haversine(points[i-1], points[i]);
+    return d;
+  }
+  function fmtDist(m){
+    return m >= 1000 ? (m/1000).toLocaleString('it-IT',{maximumFractionDigits:1}) + ' km'
+                      : Math.round(m) + ' m';
+  }
+  function fmtDur(ms){
+    const s = Math.floor(ms/1000);
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+    const pad = n => String(n).padStart(2,'0');
+    return h>0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+  }
+  function fmtDate(ts){
+    return new Date(ts).toLocaleString('it-IT', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+  }
+
+  // ---------- Drawer expand/collapse ----------
+  const drawer = document.getElementById('drawer');
+  const handle = document.getElementById('drawerHandle');
+  let drawerExpanded = false;
+  function setDrawer(open){
+    drawerExpanded = open;
+    drawer.classList.toggle('expanded', open);
+  }
+  let dragStartY = null;
+  handle.addEventListener('pointerdown', e=>{
+    dragStartY = e.clientY;
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointerup', e=>{
+    if (dragStartY === null) return;
+    const dy = e.clientY - dragStartY;
+    if (Math.abs(dy) > 25){
+      setDrawer(dy < 0);
+    } else {
+      setDrawer(!drawerExpanded);
+    }
+    dragStartY = null;
+  });
+
+  // ---------- Recording state ----------
+  let recording = false;
+  let currentMode = 'a_piedi';
+  let activePoints = [];
+  let startTime = null;
+  let statTimer = null;
+
+  document.querySelectorAll('.mode-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if (recording) return;
+      currentMode = btn.dataset.mode;
+      setActiveModeButton();
+    });
+  });
+  function setActiveModeButton(){
+    document.querySelectorAll('.mode-btn').forEach(b=>{
+      b.classList.toggle('active', b.dataset.mode === currentMode);
+    });
+  }
+  setActiveModeButton();
+
+  const trackBtn = document.getElementById('trackBtn');
+  trackBtn.addEventListener('click', ()=> recording ? stopTracking() : startTracking());
+
+  function startTracking(){
+    recording = true;
+    activePoints = [];
+    startTime = Date.now();
+    trackBtn.textContent = "Ferma e salva";
+    trackBtn.classList.add('recording');
+    document.getElementById('liveStats').classList.add('show');
+    document.querySelectorAll('.mode-btn').forEach(b=> b.disabled = true);
+
+    liveLineData.properties.color = MODE_COLOR[currentMode];
+    liveLineData.geometry.coordinates = [];
+    setLiveLineSource();
+
+    statTimer = setInterval(updateLiveStats, 1000);
+    showToast("Tracciamento avviato — tieni questa pagina aperta");
+  }
+
+  function updateLiveStats(){
+    document.getElementById('statDist').textContent = fmtDist(trackDistance(activePoints));
+    document.getElementById('statTime').textContent = fmtDur(Date.now() - startTime);
+    document.getElementById('statPoints').textContent = activePoints.length;
+  }
+
+  function stopTracking(){
+    recording = false;
+    clearInterval(statTimer);
+    trackBtn.textContent = "Inizia a tracciare";
+    trackBtn.classList.remove('recording');
+    document.querySelectorAll('.mode-btn').forEach(b=> b.disabled = false);
+
+    if (activePoints.length < 2){
+      showToast("Troppo pochi punti registrati: percorso non salvato");
+      cleanupLiveLine();
+      resetStats();
+      return;
+    }
+
+    const track = {
+      id: 't' + Date.now(),
+      mode: currentMode,
+      start: startTime,
+      end: Date.now(),
+      distance: trackDistance(activePoints),
+      points: activePoints
+    };
+    tracks.unshift(track);
+    const ok = saveTracks(tracks);
+    if (ok) showToast("Percorso salvato: " + fmtDist(track.distance));
+
+    cleanupLiveLine();
+    resetStats();
+    renderTrackList();
+    drawSavedTrack(track, true);
+  }
+
+  function cleanupLiveLine(){
+    liveLineData.geometry.coordinates = [];
+    setLiveLineSource();
+  }
+  function resetStats(){
+    document.getElementById('liveStats').classList.remove('show');
+    document.getElementById('statDist').textContent = '0,0 km';
+    document.getElementById('statTime').textContent = '00:00';
+    document.getElementById('statPoints').textContent = '0';
+    activePoints = [];
+  }
+
+  // ---------- Saved tracks ----------
+  document.getElementById('showAllTracks').addEventListener('click', ()=>{
+    selectedTrackId = 'all';
+    renderTrackList();
+    drawAllTracks();
+  });
+
+  let selectedTrackId = null;
+
+  function renderTrackList(){
+    const list = document.getElementById('trackCarousel');
+    list.innerHTML = '';
+    if (tracks.length === 0){
+      list.innerHTML = '<div class="carousel-empty">Ancora nessun percorso salvato. Scegli un mezzo e premi "Inizia a tracciare".</div>';
+      return;
+    }
+    tracks.forEach(tr=>{
+      const card = document.createElement('div');
+      card.className = 'track-card' + (tr.id === selectedTrackId && selectedTrackId !== 'all' ? ' selected' : '');
+      const dur = fmtDur(tr.end - tr.start);
+      card.innerHTML = `
+        <div><span class="dot ${tr.mode}"></span>${MODE_LABEL[tr.mode]}</div>
+        <div class="dist">${fmtDist(tr.distance)}</div>
+        <div class="meta">${fmtDate(tr.start)} · ${dur}</div>
+        <div class="actions">
+          <span data-act="export">esporta</span>
+          <span data-act="delete">elimina</span>
+        </div>
+      `;
+      card.addEventListener('click', (e)=>{
+        if (e.target.dataset.act === 'export'){ exportGPX(tr); return; }
+        if (e.target.dataset.act === 'delete'){ deleteTrack(tr.id); return; }
+        selectedTrackId = tr.id;
+        renderTrackList();
+        drawSavedTrack(tr, true);
+      });
+      list.appendChild(card);
+    });
+  }
+
+  function boundsFromCoords(coordsList){
+    const bounds = new maplibregl.LngLatBounds();
+    coordsList.forEach(c => bounds.extend(c));
+    return bounds;
+  }
+
+  function drawSavedTrack(tr, fit){
+    const coords = tr.points.map(p=>[p.lng, p.lat]);
+    savedTracksData = {
+      type:'FeatureCollection',
+      features:[{
+        type:'Feature',
+        properties:{ trackId: tr.id, color: MODE_COLOR[tr.mode], label: `${MODE_LABEL[tr.mode]} · ${fmtDate(tr.start)} · ${fmtDist(tr.distance)}` },
+        geometry:{ type:'LineString', coordinates: coords }
+      }]
+    };
+    savedEndpointsData = {
+      type:'FeatureCollection',
+      features:[
+        { type:'Feature', properties:{ color:'#3a3a3a' }, geometry:{ type:'Point', coordinates: coords[0] } },
+        { type:'Feature', properties:{ color: MODE_COLOR[tr.mode] }, geometry:{ type:'Point', coordinates: coords[coords.length-1] } }
+      ]
+    };
+    const s1 = map.getSource('saved-tracks'); if (s1) s1.setData(savedTracksData);
+    const s2 = map.getSource('saved-endpoints'); if (s2) s2.setData(savedEndpointsData);
+    if (fit) map.fitBounds(boundsFromCoords(coords), { padding:60, maxZoom:17 });
+  }
+
+  function drawAllTracks(){
+    if (tracks.length === 0){
+      savedTracksData = { type:'FeatureCollection', features:[] };
+      savedEndpointsData = { type:'FeatureCollection', features:[] };
+      const s1 = map.getSource('saved-tracks'); if (s1) s1.setData(savedTracksData);
+      const s2 = map.getSource('saved-endpoints'); if (s2) s2.setData(savedEndpointsData);
+      showToast("Nessun percorso salvato da mostrare");
+      return;
+    }
+    const allCoords = [];
+    savedTracksData = {
+      type:'FeatureCollection',
+      features: tracks.map(tr=>{
+        const coords = tr.points.map(p=>[p.lng, p.lat]);
+        allCoords.push(...coords);
+        return {
+          type:'Feature',
+          properties:{ trackId: tr.id, color: MODE_COLOR[tr.mode], label: `${MODE_LABEL[tr.mode]} · ${fmtDate(tr.start)} · ${fmtDist(tr.distance)}` },
+          geometry:{ type:'LineString', coordinates: coords }
+        };
+      })
+    };
+    savedEndpointsData = { type:'FeatureCollection', features:[] };
+    const s1 = map.getSource('saved-tracks'); if (s1) s1.setData(savedTracksData);
+    const s2 = map.getSource('saved-endpoints'); if (s2) s2.setData(savedEndpointsData);
+    if (allCoords.length) map.fitBounds(boundsFromCoords(allCoords), { padding:60, maxZoom:16 });
+  }
+
+  function deleteTrack(id){
+    if (!confirm("Eliminare definitivamente questo percorso?")) return;
+    tracks = tracks.filter(t=> t.id !== id);
+    saveTracks(tracks);
+    if (selectedTrackId === id){
+      selectedTrackId = null;
+      savedTracksData = { type:'FeatureCollection', features:[] };
+      savedEndpointsData = { type:'FeatureCollection', features:[] };
+      const s1 = map.getSource('saved-tracks'); if (s1) s1.setData(savedTracksData);
+      const s2 = map.getSource('saved-endpoints'); if (s2) s2.setData(savedEndpointsData);
+    }
+    renderTrackList();
+    showToast("Percorso eliminato");
+  }
+
+  function exportGPX(tr){
+    const pts = tr.points.map(p =>
+      `<trkpt lat="${p.lat}" lon="${p.lng}"><time>${new Date(p.t).toISOString()}</time></trkpt>`
+    ).join('\n      ');
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Diario di rotta" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>${MODE_LABEL[tr.mode]} - ${fmtDate(tr.start)}</name>
+    <trkseg>
+      ${pts}
+    </trkseg>
+  </trk>
+</gpx>`;
+    const blob = new Blob([gpx], { type:'application/gpx+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `percorso-${tr.mode}-${new Date(tr.start).toISOString().slice(0,10)}.gpx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---------- Initial render ----------
+  renderTrackList();
+
+  // warn before leaving while recording
+  window.addEventListener('beforeunload', (e)=>{
+    if (recording){
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
